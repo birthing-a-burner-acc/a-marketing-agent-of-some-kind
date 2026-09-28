@@ -1,5 +1,5 @@
 # a-marketing-agent-of-some-kind
-A Gemini-powered marketing agent that combines persistent memory (Hindsight), live SEO data (OpenSEO), and 33 structured marketing workflows (marketingskills) via the Model Context Protocol. Runs SEO audits, keyword research, and competitive analysis with cross-session memory. It's kinda slow tho, so be wary.
+A Gemini-powered marketing agent that combines persistent memory (Hindsight), live SEO data (OpenSEO), and 33 structured marketing workflows (marketingskills) via the Model Context Protocol. Runs SEO audits, keyword research, and competitive analysis with cross-session memory. It's kinda slow though, so be wary.
 
 ## Stack
 
@@ -93,6 +93,6 @@ Running python app.py with no arguments uses a default SEO-audit prompt.
 [tool] openseo_site_audit args={'target': 'example.com'}
 ```
 
-Special thanks to: Hindsight, open-seo, marketingskills, Google Gen AI SDK (Gemini).
+Special thanks to: [Hindsight](https://github.com/vectorize-io/hindsight), [OpenSEO](https://github.com/every-app/open-seo), [marketingskills](https://github.com/coreyhaines31/marketingskills), & Google Gen AI SDK (Gemini).
 
 Made real for HackwithHyderabad 3.0.
