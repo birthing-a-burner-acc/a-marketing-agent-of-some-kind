@@ -20,7 +20,7 @@ import json
 import os
 import sys
 from pathlib import Path
-
+import random
 import httpx
 
 from google import genai
@@ -35,10 +35,78 @@ from config import (
     OPENSEO_MCP_TOKEN,
     SKILLS_DIR,
 )
+from google.genai import errors
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+# ──────────────────────────────────────────────────────────────────────
+# Gemini client
+# ──────────────────────────────────────────────────────────────────────
+client = genai.Client(
+    api_key=GEMINI_API_KEY,
+    http_options=types.HttpOptions(
+        timeout=600_000,  # 600 seconds (ms), applies to the whole request
+        retry_options=types.HttpRetryOptions(
+            attempts=5,
+            initial_delay=2.0,
+            max_delay=60.0,
+            exp_base=2.0,
+            jitter=1.0,
+            http_status_codes=[408, 429, 500, 502, 503, 504],
+        ),
+    ),
+)
 
+async def generate_with_retry(client, *, model, contents, config, max_attempts=6):
+    """
+    Retries on transient failures at two layers:
+      - google.genai.errors.APIError   (503, 500, 502, 504, ...)
+      - httpx transport errors          (ReadError, ConnectError, ReadTimeout, ...)
+    """
+    RETRYABLE_CODES = {500, 502, 503, 504}
+    RETRYABLE_STATUSES = {"UNAVAILABLE", "INTERNAL", "DEADLINE_EXCEEDED"}
+    RETRYABLE_HTTPX = (
+        httpx.ReadError,
+        httpx.ConnectError,
+        httpx.ReadTimeout,
+        httpx.ConnectTimeout,
+        httpx.RemoteProtocolError,
+        httpx.WriteError,
+    )
 
+    last_exc = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return await client.aio.models.generate_content(
+                model=model,
+                contents=contents,
+                config=config,
+            )
+
+        # ── Gemini API-level errors ────────────────────────────────
+        except errors.APIError as e:
+            last_exc = e
+            code = getattr(e, "code", None)
+            status = (getattr(e, "status", None) or "").upper()
+            if not (code in RETRYABLE_CODES or status in RETRYABLE_STATUSES):
+                raise
+            if attempt == max_attempts:
+                raise
+            delay = min(2.0 * (2 ** (attempt - 1)) + random.uniform(0, 1.5), 60.0)
+            print(f"[retry] APIError {code} {status} "
+                  f"(attempt {attempt}/{max_attempts}), sleeping {delay:.1f}s")
+            await asyncio.sleep(delay)
+
+        # ── Network-level errors ───────────────────────────────────
+        except RETRYABLE_HTTPX as e:
+            last_exc = e
+            if attempt == max_attempts:
+                raise
+            delay = min(2.0 * (2 ** (attempt - 1)) + random.uniform(0, 1.5), 60.0)
+            print(f"[retry] {type(e).__name__}: {e} "
+                  f"(attempt {attempt}/{max_attempts}), sleeping {delay:.1f}s")
+            await asyncio.sleep(delay)
+
+    if last_exc:
+        raise last_exc
 # ──────────────────────────────────────────────────────────────────────
 # Skill loading
 # ──────────────────────────────────────────────────────────────────────
@@ -307,8 +375,15 @@ async def run_agent(user_query: str) -> str | None:
                                 for iteration in range(MAX_ITERATIONS):
                                     print(f"[loop] iteration {iteration + 1}")
 
-                                    response = await client.aio.models.generate_content(
+                                    '''response = await client.aio.models.generate_content(
                                         model="gemini-3.5-flash",
+                                        contents=contents,
+                                        config=config,
+                                    )'''
+
+                                    response = await generate_with_retry(
+                                        client,
+                                        model="gemini-3.1-flash-lite",
                                         contents=contents,
                                         config=config,
                                     )
@@ -365,6 +440,17 @@ async def run_agent(user_query: str) -> str | None:
                                                 for c in result.content
                                                 if hasattr(c, "text")
                                             ) or "(no text content)"
+                                            # Inside the tool-call loop, right after you get `text_output`:
+
+                                            MAX_TOOL_CHARS = 20_000  # ~5k tokens; adjust as needed
+
+                                            if len(text_output) > MAX_TOOL_CHARS:
+                                                trimmed = text_output[:MAX_TOOL_CHARS]
+                                                text_output = (
+                                                    trimmed
+                                                    + f"\n\n[...truncated {len(text_output) - MAX_TOOL_CHARS} chars "
+                                                    "to keep payload small. Request specific sections if you need more.]"
+                                                    )
                                             print(
                                                 f"[tool] {fc.name} → "
                                                 f"{len(text_output)} chars"
